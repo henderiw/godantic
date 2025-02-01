@@ -16,8 +16,10 @@ import (
 const validationMarker = "// +generate:validate"
 
 type StructInfo struct {
-	Name   string
-	Fields []FieldInfo
+	Name            string
+	Fields          []FieldInfo
+	HasNestedStruct bool
+	HasValidationRules bool
 }
 
 type EnumInfo struct {
@@ -31,13 +33,16 @@ type FieldInfo struct {
 	Type            ast.Expr
 	ValidationRules []types.ValidationRule
 	Node            *ast.File
+	NestedStruct    bool
 }
 
 type FileInfo struct {
-	Path    string
-	Package string
-	Structs []StructInfo
-	Enums   []EnumInfo
+	Path             string
+	Package          string
+	Structs          []StructInfo
+	Enums            []EnumInfo
+	HasNestedStructs bool
+	HasValidationRules bool
 }
 
 func main() {
@@ -49,12 +54,6 @@ func main() {
 	validategenerator := NewGenerator(path)
 	validategenerator.Generate()
 
-	/*
-		x := networkv1alpha1.Dummy(1)
-		if err := x.Validate(); err != nil {
-			panic(err)
-		}
-	*/
 }
 
 func NewGenerator(path string) *Generator {
@@ -97,6 +96,8 @@ func (r *Generator) processFile(path string) (*FileInfo, error) {
 		Enums:   []EnumInfo{},
 	}
 
+	fileHasNestedStructs := false
+	fileHasValidationRules := false
 	for _, decl := range node.Decls {
 		genDecl, ok := decl.(*ast.GenDecl)
 		if !ok || genDecl.Tok != token.TYPE {
@@ -128,6 +129,8 @@ func (r *Generator) processFile(path string) (*FileInfo, error) {
 			switch typeDecl := typeSpec.Type.(type) {
 			case *ast.StructType:
 				// Handle Structs
+				var hasNestedStruct bool
+				var hasValidationRules bool
 				var fields []FieldInfo
 				for _, field := range typeDecl.Fields.List {
 					if len(field.Names) == 0 {
@@ -135,6 +138,7 @@ func (r *Generator) processFile(path string) (*FileInfo, error) {
 					}
 
 					var validationRules []types.ValidationRule
+					var nestedStruct bool
 					skip := false
 					if field.Doc != nil {
 						for _, comment := range field.Doc.List {
@@ -143,17 +147,23 @@ func (r *Generator) processFile(path string) (*FileInfo, error) {
 								if err != nil {
 									panic(err)
 								}
-
 								if funcName == "skip" {
 									skip = true
 									break
 								}
-
 								validationRule, err := r.parseValidationRule(funcName, attr)
 								if err != nil {
 									panic(err)
 								}
 								validationRules = append(validationRules, validationRule)
+								hasValidationRules = true
+								fileHasValidationRules = true
+							} else {
+								nestedStruct = isNestedStructOrEnum(field.Type, node)
+								if nestedStruct {
+									hasNestedStruct = true
+									fileHasNestedStructs = true
+								}
 							}
 						}
 					}
@@ -164,10 +174,16 @@ func (r *Generator) processFile(path string) (*FileInfo, error) {
 							Type:            field.Type,
 							ValidationRules: validationRules,
 							Node:            node,
+							NestedStruct:    nestedStruct,
 						})
 					}
 				}
-				fileInfo.Structs = append(fileInfo.Structs, StructInfo{Name: typeSpec.Name.Name, Fields: fields})
+				fileInfo.Structs = append(fileInfo.Structs, StructInfo{
+					Name:            typeSpec.Name.Name,
+					Fields:          fields,
+					HasNestedStruct: hasNestedStruct,
+					HasValidationRules: hasValidationRules,
+				})
 			case *ast.Ident:
 				// Handle Enum-like Types (Alias of string, int, etc.)
 				if baseType, isAlias := detectTypeAlias(node, typeSpec.Name.Name); isAlias {
@@ -181,7 +197,8 @@ func (r *Generator) processFile(path string) (*FileInfo, error) {
 			}
 		}
 	}
-
+	fileInfo.HasNestedStructs = fileHasNestedStructs
+	fileInfo.HasValidationRules = fileHasValidationRules
 	return fileInfo, nil
 }
 
@@ -220,74 +237,63 @@ func (r *Generator) parseValidationRule(funcName, attrs string) (types.Validatio
 	return nil, fmt.Errorf("unsupported validator: %s", funcName)
 }
 
-func exprToString(expr ast.Expr) string {
-	switch t := expr.(type) {
-	case *ast.Ident:
-		return t.Name
-	case *ast.ArrayType:
-		return "[]" + exprToString(t.Elt)
-	case *ast.MapType:
-		return "map[" + exprToString(t.Key) + "]" + exprToString(t.Value)
-	default:
-		return "unknown"
-	}
-}
-
 func (r *Generator) generateValidationCode(fileInfo *FileInfo) {
 	outputFile := strings.TrimSuffix(fileInfo.Path, ".go") + "_validate.go"
 	var sb strings.Builder
 	sb.WriteString("// GENERATED CODE - DO NOT EDIT\n")
 	sb.WriteString(fmt.Sprintf("package %s\n\n", fileInfo.Package)) // Use actual package name
 	sb.WriteString("import (\n")
-	sb.WriteString("\t\"fmt\"\n")
-	//sb.WriteString("\t\"errors\"\n")
+	if len(fileInfo.Enums) > 0 || fileInfo.HasValidationRules {
+		sb.WriteString("\t\"fmt\"\n")
+	}
+	if fileInfo.HasNestedStructs {
+		fmt.Println(fileInfo.Path, len(fileInfo.Structs), fileInfo.HasNestedStructs)
+		sb.WriteString("\t\"errors\"\n")
+	}
 	sb.WriteString("\t)\n")
 
-	for _, enum := range fileInfo.Enums {
-		//var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("func (r %s) Validate() error {\n", enum.Name))
-		sb.WriteString(generateEnumValidation(enum.Name, enum.Type, enum.AllowedValues))
+	for _, enumInfo := range fileInfo.Enums {
+		sb.WriteString(fmt.Sprintf("func (r %s) Validate() error {\n", enumInfo.Name))
+		sb.WriteString(generateEnumValidation(enumInfo.Name, enumInfo.Type, enumInfo.AllowedValues))
 		sb.WriteString("}\n")
-		//fmt.Println(sb.String())
 	}
-	/*
-		for _, s := range fileInfo.Structs {
-			var sb strings.Builder
-			//sb.WriteString(fmt.Sprintf("func (s *%s) Validate() error {\n", s.Name))
-			//sb.WriteString("\tvar errs error\n")
-
-			for _, f := range s.Fields {
-				//for _, validationRule := range f.ValidationRules {
-				//	fmt.Printf("\tfield: %s type: %s rules: %v\n", f.Name, f.Type, validationRule.String())
-				//}
-				rulePresent := false
-				for _, rule := range f.ValidationRules {
-					rulePresent = true
-					sb.WriteString(rule.String())
-				}
-				if !rulePresent {
-					nested := generateNestedStructs(f)
-					if len(nested) > 0 {
-						sb.WriteString(nested)
-					}
-				}
-
-
-				//	if f.Validate != "" {
-				//		fmt.Printf("\tif err := validate%s(s.%s); err != nil {\n", strings.Title(f.Validate), f.Name)
-				//		fmt.Println("\t\terrors = append(errors, err)")
-				//		fmt.Println("\t}")
-				//	}
-
-			}
-
-			sb.WriteString("\tif errs != nil{ return errs }\n")
-			sb.WriteString("\treturn nil\n")
-			sb.WriteString("}\n")
-			fmt.Println(sb.String())
+	for _, schemaInfo := range fileInfo.Structs {
+		sb.WriteString(fmt.Sprintf("func (r *%s) Validate() error {\n", schemaInfo.Name))
+		if schemaInfo.Name == "ConditionedStatus" {
+			fmt.Println("ConditionedStatus", schemaInfo)
 		}
-	*/
-	if len(fileInfo.Enums) > 0 {
+		if schemaInfo.HasNestedStruct {
+			sb.WriteString("\tvar errs error\n")
+		}
+
+		for _, fieldInfo := range schemaInfo.Fields {
+			for _, rule := range fieldInfo.ValidationRules {
+				fieldName := fieldInfo.Name
+				fieldNameCode := fmt.Sprintf("r.%s", fieldName)
+				if isPointerType(fieldInfo.Type) {
+					sb.WriteString(fmt.Sprintf("if r.%s != nil {\n", fieldName))
+					fieldNameCode = fmt.Sprintf("*r.%s", fieldName)
+					fieldName = "*" + fieldName // Dereference pointer for validation
+				}
+				
+				sb.WriteString(rule.ExpandCode(fieldName, fieldNameCode)) // Expand the code based on the rule
+				if isPointerType(fieldInfo.Type) {
+					sb.WriteString("}\n") // Close the pointer check block
+				}
+			}
+			// nested code generation is implicitly enabled
+			// when a struct exists we generate the nested validation rules
+			if fieldInfo.NestedStruct {
+				sb.WriteString(generateNestedStructs(fieldInfo, fieldInfo.Type, fmt.Sprintf("r.%s", fieldInfo.Name)))
+			}
+		}
+		if schemaInfo.HasNestedStruct {
+			sb.WriteString("\tif errs != nil{ return errs }\n")
+		}
+		sb.WriteString("\treturn nil\n")
+		sb.WriteString("}\n")
+	}
+	if len(fileInfo.Enums) > 0 || len(fileInfo.Structs) > 0 {
 		err := os.WriteFile(outputFile, []byte(sb.String()), 0644)
 		if err != nil {
 			fmt.Println("Error writing validation file:", err)
@@ -302,76 +308,77 @@ func (r *Generator) generateValidationCode(fileInfo *FileInfo) {
 
 }
 
-func generateNestedStructs(fieldInfo FieldInfo) string {
-	typ := fieldInfo.Type
-	pointer := false
-	var innerType ast.Expr = typ
-	if starExpr, ok := typ.(*ast.StarExpr); ok {
-		pointer = true
-		innerType = starExpr.X
+func isNestedStructOrEnum(expr ast.Expr, node *ast.File) bool {
+	switch t := expr.(type) {
+	case *ast.StarExpr: // Pointer to a struct (e.g., *MyStruct)
+		return isNestedStructOrEnum(t.X, node)
+	case *ast.StructType: // Direct struct type
+		return true
+	case *ast.SelectorExpr: // External package struct (e.g., mypkg.MyStruct)
+		return true
+	case *ast.Ident:
+		return isDeclaredAsStructOrEnum(t.Name, node)
+	case *ast.ArrayType: // Array (e.g., []MyStruct)
+		fmt.Println("array type")
+		return isNestedStructOrEnum(t.Elt, node) // Recursively check element type
+	case *ast.MapType: // Map (e.g., map[string]MyStruct)
+		return isNestedStructOrEnum(t.Value, node) // Recursively check map value type
+	default:
+		return false
 	}
+}
 
+func generateNestedStructs(fieldInfo FieldInfo, expr ast.Expr, fieldName string) string {
 	var sb strings.Builder
 
-	switch t := innerType.(type) {
-	case *ast.StructType, *ast.SelectorExpr:
-		sb.WriteString(fmt.Sprintf("\tSTRUCT %s\n", fieldInfo.Name))
-		// EXPAND ENUM HERE
+	switch t := expr.(type) {
+	case *ast.StarExpr:
+		// If it's a pointer, wrap validation inside `if != nil`
+		sb.WriteString(fmt.Sprintf("if %s != nil {\n", fieldName))
+		sb.WriteString(generateNestedStructs(fieldInfo, t.X, fieldName))
+		sb.WriteString("}\n")
 
-		// If it's a struct, call Validate() on it
-		if pointer {
-			sb.WriteString(fmt.Sprintf("\tif %s != nil { if err := %s.Validate(); err != nil { errs = errors.Join(errs, err) } }\n",
-				fieldInfo.Name, fieldInfo.Name))
-		} else {
-			sb.WriteString(fmt.Sprintf("\tif err := %s.Validate(); err != nil { errs = errors.Join(errs, err }\n", fieldInfo.Name))
-		}
+	// the ast.ident we blindly use since we have done the validation before (ast.Ident is s struct in the same file)
+	case *ast.StructType, *ast.SelectorExpr, *ast.Ident:
+		// If it's a struct, call Validate()
+		sb.WriteString(fmt.Sprintf("if err := %s.Validate(); err != nil {\n", fieldName))
+		sb.WriteString("\terrs = errors.Join(errs, err)\n")
+		sb.WriteString("}\n")
 
 	case *ast.ArrayType:
-		sb.WriteString(fmt.Sprintf("\tARRAY %s\n", fieldInfo.Name))
-		// If it's a slice, iterate and call Validate()
-		elementType := t.Elt
-		pointerElement := false
-
-		if starExpr, ok := elementType.(*ast.StarExpr); ok {
-			pointerElement = true
-			elementType = starExpr.X
-		}
-
-		if _, isStruct := elementType.(*ast.StructType); isStruct {
-			// EXPAND ENUM HERE
-			if pointerElement {
-				sb.WriteString(fmt.Sprintf("\tfor _, item := range %s { if item != nil { if err := item.Validate(); err != nil { errs = errors.Join(errs, err } } }\n",
-					fieldInfo.Name))
-			} else {
-				sb.WriteString(fmt.Sprintf("\tfor _, item := range %s { if err := item.Validate(); err != nil { errs = errors.Join(errs, err } }\n",
-					fieldInfo.Name))
-			}
-		}
+		// If it's an array/slice, iterate and call Validate()
+		iteratorVar := "item"
+		sb.WriteString(fmt.Sprintf("for _, %s := range %s {\n", iteratorVar, fieldName))
+		sb.WriteString(generateNestedStructs(fieldInfo, t.Elt, iteratorVar))
+		sb.WriteString("}\n")
 
 	case *ast.MapType:
-		sb.WriteString(fmt.Sprintf("\tMAP %s\n", fieldInfo.Name))
 		// If it's a map, iterate over values and call Validate()
-		valueType := t.Value
-		pointerValue := false
+		iteratorVar := "value"
+		sb.WriteString(fmt.Sprintf("for _, %s := range %s {\n", iteratorVar, fieldName))
+		sb.WriteString(generateNestedStructs(fieldInfo, t.Value, iteratorVar))
+		sb.WriteString("}\n")
+	}
 
-		if starExpr, ok := valueType.(*ast.StarExpr); ok {
-			pointerValue = true
-			valueType = starExpr.X
-		}
+	return sb.String()
+}
 
-		if _, isStruct := valueType.(*ast.StructType); isStruct {
-			// EXPAND ENUM HERE
-			if pointerValue {
-				sb.WriteString(fmt.Sprintf("\tfor _, value := range %s { if value != nil { if err := value.Validate(); err != nil { errs = errors.Join(errs, err } } }\n",
-					fieldInfo.Name))
-			} else {
-				sb.WriteString(fmt.Sprintf("\tfor _, value := range %s { if err := value.Validate(); err != nil { errs = errors.Join(errs, err } }\n",
-					fieldInfo.Name))
+// isIdentDeclaredAsStruct check if an `ast.Ident` is a Struct
+func isDeclaredAsStructOrEnum(typeName string, node *ast.File) bool {
+	for _, decl := range node.Decls {
+		if genDecl, ok := decl.(*ast.GenDecl); ok {
+			for _, spec := range genDecl.Specs {
+				if typeSpec, ok := spec.(*ast.TypeSpec); ok {
+					if typeSpec.Name.Name == typeName {
+						_, isStruct := typeSpec.Type.(*ast.StructType)
+						_, isEnum := detectTypeAlias(node, typeName)
+						return isStruct || isEnum
+					}
+				}
 			}
 		}
 	}
-	return sb.String()
-
+	return false
 }
 
 // detectTypeAlias checks if a type is an alias of string.
@@ -489,4 +496,10 @@ func formatGoFile(filename string) {
 	if err := cmd.Run(); err != nil {
 		fmt.Println("Error formatting file with gofmt:", err)
 	}
+}
+
+
+func isPointerType(expr ast.Expr) bool {
+	_, ok := expr.(*ast.StarExpr)
+	return ok
 }

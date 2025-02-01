@@ -49,3 +49,34 @@ func (r *Range) String() string {
 	sb.WriteString(")")
 	return sb.String()
 }
+
+func (r *Range) ExpandCode(fieldName, fieldNameCode string) string {
+	var sb strings.Builder
+
+	// Generate validation conditions
+	if r.Min != nil {
+		sb.WriteString(fmt.Sprintf("if %s < %f {\n", fieldNameCode, *r.Min))
+		sb.WriteString(generateError(fmt.Sprintf("%s must be >= %%f", fieldName), *r.Min, r.Message, r.Code))
+		sb.WriteString("}\n")
+	}
+
+	if r.Max != nil {
+		sb.WriteString(fmt.Sprintf("if %s > %f {\n", fieldNameCode, *r.Max))
+		sb.WriteString(generateError(fmt.Sprintf("%s must be <= %%f", fieldName), *r.Max, r.Message, r.Code))
+		sb.WriteString("}\n")
+	}
+
+	if r.ExclusiveMin != nil {
+		sb.WriteString(fmt.Sprintf("if %s <= %f {\n", fieldNameCode, *r.ExclusiveMin))
+		sb.WriteString(generateError(fmt.Sprintf("%s must be > %%f", fieldName), *r.ExclusiveMin, r.Message, r.Code))
+		sb.WriteString("}\n")
+	}
+
+	if r.ExclusiveMax != nil {
+		sb.WriteString(fmt.Sprintf("if %s >= %f {\n", fieldNameCode, *r.ExclusiveMax))
+		sb.WriteString(generateError(fmt.Sprintf("%s must be < %%f", fieldName), *r.ExclusiveMax, r.Message, r.Code))
+		sb.WriteString("}\n")
+	}
+
+	return sb.String()
+}

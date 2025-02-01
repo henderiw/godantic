@@ -7,6 +7,7 @@ import "time"
 type PhysicalProperties struct {
 	SerialNumber string    `json:"serialNumber"`
 	Manufacturer string    `json:"manufacturer"`
+	// +validate(skip)
 	PurshaseDate time.Time `json:"purchaseDate,omitempty"`
 	Type         string    `json:"type"`
 }

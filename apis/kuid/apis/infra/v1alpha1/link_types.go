@@ -29,6 +29,7 @@ type LinkSpec struct {
 
 	// Endpoints define the 2 endpoint identifiers of the link
 	// Can only have 2 endpoints
+	// +validate(length(equal = 2))
 	Endpoints []*metav1.ObjectReference `json:"endpoints" protobuf:"bytes,1,opt,name=endpoints"`
 	// UserDefinedLabels define metadata to the resource.
 	// defined in the spec to distingiush metadata labels from user defined labels

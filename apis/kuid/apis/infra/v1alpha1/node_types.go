@@ -13,9 +13,8 @@ type NodeSpec struct {
 	// the name should be defined that is unique within the system -> k8s constraint
 
 	// Node defines the name of the node
-	// +validate(length(min = 4, max = 5))
-	// +validate(range(min = 4, max = 5, exclusive_min = 100))
-	Node string `json:"node"`
+	// +validate(length(min = 10))
+	Node *string `json:"node"`
 
 	// *** Static immutable below ***
 	PhysicalProperties kubenettypesv1alpha1.PhysicalProperties `json:",inline"`

@@ -13,6 +13,7 @@ type ValidatorRuleParser func(string) (ValidationRule, error)
 
 type ValidationRule interface {
 	String() string
+	ExpandCode(fieldName, fieldNameCode string) string
 }
 
 func InitValidationRuleRegistry() map[string]ValidatorRuleParser {

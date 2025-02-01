@@ -12,3 +12,6 @@ func (r OSPFVersion) Validate() error {
 	}
 	return nil
 }
+func (r *OSPFLinkParameters) Validate() error {
+	return nil
+}

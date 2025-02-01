@@ -22,6 +22,7 @@ import (
 )
 
 // A ConditionType represents a condition type for a given KRM resource
+// +generate:validate
 type ConditionType string
 
 // Condition Types.
@@ -31,6 +32,7 @@ const (
 )
 
 // A ConditionReason represents the reason a resource is in a condition.
+// +generate:validate
 type ConditionReason string
 
 // Reasons a resource is ready or not
@@ -40,6 +42,7 @@ const (
 	ConditionReasonUnknown ConditionReason = "Unknown"
 )
 
+// +generate:validate
 type ConditionStatus string
 
 // These are valid condition statuses. "ConditionTrue" means a resource is in the condition.
